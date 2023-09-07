@@ -1,0 +1,209 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue May 17 00:13:44 2022
+
+@author: hp
+"""
+
+import pandas as pd  
+import pickle
+import numpy as np
+# import matplotlib.pyplot as plt
+import scipy.stats as sstats
+import scipy
+# from scipy import signal
+from scipy.integrate import simps
+# from scipy.signal import filtfilt, butter, lfilter, welch
+import nolds
+import antropy as ant
+from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report
+from sklearn.decomposition import PCA
+#%%
+#LOADING DATA(s01)
+with open("s32.dat", "rb") as file: f = pickle.load(file, encoding='latin1')
+Ntrial = 40
+data = f['data']
+labels = f['labels']
+CAR_all = []
+Feature_trial = []
+BP_Power = []
+Feature_array = []
+FAA_trial = []
+#%%
+#LOOP FOR TRIAL
+for k in range(Ntrial):
+    trial = data[k]
+    Ctrial = trial - np.mean(trial, axis=0) #Common Average Referencing
+    C_EEG_Trial =  Ctrial [0:32, 384:8064] #Seperating EEG and non-EEG channels/ 3sec baseline removal
+    C_Baseline_EEG = Ctrial [0:32, 0:384]
+    CAR_all.append(C_EEG_Trial)
+    bp_theta_Value, bp_alpha_Value, bp_beta_Value , bp_gamma_Value  = [] , [] , [] , []
+    Mean_Value, Stdev_Value, Skew_Value, Median_Value, Kurt_Value, Ent_Value, HFD_Value, Corr_Value = [] , [] , [] , [] , [], [], [], []
+#%%
+    #LOOP FOR EEG CHANNELS
+    for i in range (np.shape(C_EEG_Trial[:,1])[0]):
+    # Filtering
+      order = 5
+      sample_freq = 128
+      cutoff_freq = 2
+      sample_duration = 60
+      no_of_samples = sample_freq * sample_duration
+      time = np.linspace(0, sample_duration, no_of_samples, endpoint = False)
+      normalized_cutoff = 2 * cutoff_freq / sample_freq
+      b, a = scipy.signal.butter(order, normalized_cutoff, analog=False)
+      filtered_signal = scipy.signal.lfilter(b, a, C_EEG_Trial[0:32,:], axis = 0)
+      filt_window = np.hsplit(filtered_signal, 60)      
+      
+      #Compute PSD
+      sf = 128
+      time = np.arange(C_EEG_Trial.size)/ sf  
+      win = 1 * sf #Define window lenght(1 second)
+      freqs_filt, psd_filt = freqs, Psd = scipy.signal.welch(filtered_signal, fs=128.0, nperseg=win, axis=1)
+      freq_filt_res = freqs[1] - freqs[0]
+      
+      #BANDPASS FILTER
+      nyq = 0.5 * sample_freq
+      
+      #FOR THETA
+      fmin_theta = 3
+      fmax_theta = 7
+      low_theta = fmin_theta / nyq
+      high_theta = fmax_theta / nyq
+      b_theta, a_theta = scipy.signal.butter(order, [low_theta, high_theta], btype='band', analog=False)
+      filtered_theta = scipy.signal.lfilter(b_theta, a_theta, filtered_signal[0:32,:], axis = 0)
+      filt_theta = np.hsplit(filtered_theta, 60)
+     
+      
+      #FOR ALPHA
+      fmin_alpha = 8
+      fmax_alpha = 13
+      low_alpha = fmin_alpha / nyq
+      high_alpha = fmax_alpha / nyq
+      b_alpha, a_alpha = scipy.signal.butter(order, [low_alpha, high_alpha], btype='band', analog=False)
+      filtered_alpha = scipy.signal.lfilter(b_alpha, a_alpha, filtered_signal[0:32,:], axis = 0)
+      filt_alpha = np.hsplit(filtered_alpha, 60)
+      
+      
+      #FOR BETA
+      fmin_beta = 14
+      fmax_beta = 29
+      low_beta = fmin_beta / nyq
+      high_beta = fmax_beta / nyq
+      b_beta, a_beta = scipy.signal.butter(order, [low_beta, high_beta], btype='band', analog='False')
+      filtered_beta = scipy.signal.lfilter(b_beta, a_beta, C_EEG_Trial[0:32,:], axis = 0)
+      filt_beta = np.hsplit(filtered_beta, 60)
+      #FOR Frontal assymetery of beta band
+      freqs_b, Psd_b = scipy.signal.welch(filtered_beta, nperseg=win, axis=1)
+      idx_b = np.logical_and(freqs_filt >= fmin_beta, freqs_filt <= fmax_beta)
+      pow_rightbeta = simps(Psd_b[19,:][idx_b], dx=freq_filt_res)
+      pow_leftbeta = simps(Psd_b[2,:][idx_b], dx=freq_filt_res)
+      #Computing FAA at F4 & F3 channel
+      FAA_beta = np.log(pow_rightbeta) - np.log(pow_leftbeta)
+
+      #FOR GAMMA
+      fmin_gamma = 30
+      fmax_gamma = 47
+      low_gamma = fmin_gamma / nyq
+      high_gamma = fmax_gamma / nyq
+      b_gamma, a_gamma = scipy.signal.butter(order, [low_gamma, high_gamma], btype='band', analog='False')
+      filtered_gamma = scipy.signal.lfilter(b_gamma, a_gamma, C_EEG_Trial[0:32,:], axis = 0)
+      filt_gamma = np.hsplit(filtered_gamma, 60)
+#%%
+      #Loop for 60 chunks
+      #Compute PSD, bandpower
+      for j in range (60):
+          freqs, Psd = scipy.signal.welch(((filt_window[j])[i]),fs=128, nperseg = win, axis=0 )
+          freqs_theta, Psd_theta = scipy.signal.welch(((filt_theta[j])[i]), fs=128, nperseg = win, axis=0)
+          freqs_alpha, Psd_alpha = scipy.signal.welch(((filt_alpha[j])[i]), fs=128, nperseg = win, axis=0)
+          freqs_beta, Psd_beta = scipy.signal.welch(((filt_beta[j])[i]), fs=128, nperseg = win, axis=0)
+          freqs_gamma, Psd_gamma = scipy.signal.welch(((filt_gamma[j])[i]), fs=128, nperseg = win, axis=0)
+          freqs_res = freqs[1] - freqs[0]
+          idx_theta = np.logical_and(freqs >= fmin_theta, freqs <= fmax_theta)
+          idx_alpha = np.logical_and(freqs >= fmin_alpha, freqs <= fmax_alpha)
+          idx_beta = np.logical_and(freqs >= fmin_beta, freqs <= fmax_beta)
+          idx_gamma = np.logical_and(freqs >= fmin_gamma, freqs <= fmax_gamma)
+          bp_theta = simps(Psd_theta[idx_theta], dx=freqs_res)
+          bp_alpha = simps(Psd_alpha[idx_alpha], dx=freqs_res)
+          bp_beta = simps(Psd_beta[idx_beta], dx=freqs_res)
+          bp_gamma = simps(Psd_gamma[idx_gamma], dx=freqs_res)
+          bp_theta_Value.append(bp_theta)
+          bp_alpha_Value.append(bp_alpha)
+          bp_beta_Value.append(bp_beta)
+          bp_gamma_Value.append(bp_gamma)
+          
+    n = len(filt_window)
+    for l in range (n):
+        for m in range (len(filt_window[l])):
+            w_mean = np.mean((filt_window[l])[m])
+            w_stdev = np.std((filt_window[l])[m])
+            w_skew = sstats.skew((filt_window[l])[m])
+            w_median = np.median((filt_window[l])[m])
+            w_kurt = sstats.kurtosis((filt_window[l])[m])
+            ent = ant.sample_entropy((filt_window[l])[m])
+            hfd = ant.higuchi_fd((filt_window[l])[m])
+            corr_dim = nolds.corr_dim(((filt_window[l])[m]), emb_dim=2)
+            Mean_Value.append(w_mean)
+            Stdev_Value.append(w_stdev)
+            Skew_Value.append(w_skew)
+            Median_Value.append(w_median)
+            Kurt_Value.append(w_kurt)
+            Ent_Value.append(ent)
+            HFD_Value.append(hfd)
+            Corr_Value.append(corr_dim)
+    FAA_trial.append(FAA_beta)
+    frontal_assym = np.array(FAA_trial)
+    # Feature_array.append([Skew_Value, Kurt_Value, Ent_Value, HFD_Value, Corr_Value, bp_gamma_Value, bp_theta_Value, bp_alpha_Value, bp_beta_Value])
+    # Feature = np.array(Feature_array)
+    # Feature_reshape = np.reshape(Feature, (Feature.shape[0], Feature.shape[1]*Feature.shape[2]))
+    # Feature_matrix = np.column_stack((Feature_reshape, frontal_assym))
+#%%
+HAHV_Class1 = [1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,1,1,1,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,1] 
+Class_1 = np.column_stack((frontal_assym, HAHV_Class1))
+LAHV_Class2 = [0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+Class_2 = np.column_stack((frontal_assym, LAHV_Class2))
+LALV_Class4 = [0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,0,1,0,0,0,0,0,0,0]
+Class_4 = np.column_stack((frontal_assym, LALV_Class4))
+HALV_Class3 = [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0 ,0 , 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0]
+Class_3 = np.column_stack((frontal_assym, HALV_Class3))
+#%%
+# CLASSIFICATION HAHV/CLASS-1
+X1 = Class_1[:,0:-1]
+y1 = Class_1[:,-1]
+X1_train, X1_test, y1_train, y1_test = train_test_split(X1, y1, test_size=0.25, random_state=42)
+model = SVC(gamma='scale', random_state=42, class_weight='balanced')
+C1 = model.fit(X1_train, y1_train)
+accuracy_C1 = model.score(X1_test, y1_test)
+y1_predict = model.predict(X1_test)
+
+#CLASSIFICATION LAHV/CLASS-2
+X2 = Class_2[:,0:-1]
+y2 = Class_2[:,-1]
+X2_train, X2_test, y2_train, y2_test = train_test_split(X2, y2, test_size=0.25, random_state=42)
+model = SVC(gamma='scale', random_state=42, class_weight='balanced')
+C2 = model.fit(X2_train, y2_train)
+accuracy_C2 = model.score(X2_test, y2_test)
+y2_predict = model.predict(X2_test)
+
+# CLASSIFICATION HALV/CLASS-3
+X3 = Class_3[:,0:-1]
+y3 = Class_3[:,-1]
+X3_train, X3_test, y3_train, y3_test = train_test_split(X3, y3, test_size=0.25, random_state=42)
+model = SVC(gamma='scale', random_state=42, class_weight='balanced')
+C3 = model.fit(X3_train, y3_train)
+accuracy_C3 = model.score(X3_test, y3_test)
+y3_predict = model.predict(X3_test)
+
+# CLASSIFICATION LALV/CLASS-4
+X4 = Class_4[:,0:-1]
+y4 = Class_4[:,-1]
+X4_train, X4_test, y4_train, y4_test = train_test_split(X4, y4, test_size=0.25, random_state=42)
+model = SVC(gamma='scale', random_state=42, class_weight='balanced')
+C4 = model.fit(X4_train, y4_train)
+accuracy_C4 = model.score(X4_test, y4_test)
+y4_predict = model.predict(X4_test)
+#%%
